@@ -124,3 +124,7 @@ dialog#sheet[open]{display:flex;flex-direction:column;animation:up .18s ease-out
 
 #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 90px);transform:translateX(-50%);background:var(--band);color:#fff;padding:10px 16px;border-radius:999px;font-size:.9rem;opacity:0;pointer-events:none;transition:opacity .2s;z-index:60;max-width:90%;text-align:center}
 #toast.show{opacity:1}
+
+.form .pickrow{margin-top:8px}
+.form .pickrow .pick{margin:0;font-size:.9rem;padding:12px 8px}
+.form input[type=date]{min-height:48px}

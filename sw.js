@@ -1,4 +1,4 @@
-const VERSION = 'inventaire-v1';
+const VERSION = 'inventaire-v2';
 const FILES = ['./', './index.html', './style.css', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

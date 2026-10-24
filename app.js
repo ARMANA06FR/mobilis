@@ -8,7 +8,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const eur = n => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(n || 0);
 const fmtDate = ts => new Date(ts).toLocaleDateString('fr-FR');
 const fmtDateTime = ts => new Date(ts).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const t = new Date(); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+const fmtDay = s => String(s).split('-').reverse().join('/');
 const fixUrl = u => { u = String(u || '').trim(); return u && !/^https?:\/\//i.test(u) ? 'https://' + u : u; };
 
 const ICON = {
@@ -226,6 +227,7 @@ function openDetail(id) {
         ${row('Catégorie', catName(i.cat))}
         ${row('Quantité', String(i.qty || 1))}
         ${i.price != null ? row('Prix d’achat (unité)', eur(i.price)) + row('Total', eur(i.price * (i.qty || 1))) : ''}
+        ${row('Date d’achat', i.date ? fmtDay(i.date) : '')}
         ${row('Lieu d’achat', i.store)}
         ${row('Emplacement', i.location)}
       </dl>
@@ -249,7 +251,7 @@ function openForm(item, asCopy = false) {
   const isNew = !item || asCopy;
   const d = item
     ? { ...item, photos: [...(item.photos || [])] }
-    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, store: '', url: '', description: '', location: '', notes: '', photos: [] };
+    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, date: today(), store: '', url: '', description: '', location: '', notes: '', photos: [] };
   if (asCopy) { d.id = uid(); d.name = d.name + ' (copie)'; delete d.created; }
 
   openSheet(`
@@ -257,13 +259,17 @@ function openForm(item, asCopy = false) {
     <div class="sh-body form">
       <div class="photos" id="ph"></div>
       <p class="hint">Touchez une photo pour en faire la vignette (bordure colorée).</p>
-      <label class="btn wide pick">Ajouter des photos<input id="f-files" type="file" accept="image/*" multiple hidden></label>
+      <div class="two pickrow">
+        <label class="btn pick">Prendre une photo<input id="f-cam" type="file" accept="image/*" capture="environment" hidden></label>
+        <label class="btn pick">Choisir dans la galerie<input id="f-files" type="file" accept="image/*" multiple hidden></label>
+      </div>
       <label>Nom de l’article<input id="f-name" class="field" autocomplete="off" value="${esc(d.name)}"></label>
       <label>Catégorie<select id="f-cat"></select></label>
       <div class="two">
         <label>Quantité<input id="f-qty" class="field" type="number" min="1" inputmode="numeric" value="${d.qty || 1}"></label>
         <label>Prix d’achat par unité (€)<input id="f-price" class="field" inputmode="decimal" value="${d.price != null ? String(d.price).replace('.', ',') : ''}"></label>
       </div>
+      <label>Date d’achat<input id="f-date" class="field" type="date" value="${esc(d.date || '')}"></label>
       <label>Lieu d’achat<input id="f-store" class="field" placeholder="Ikea Nice, Leroy Merlin, Amazon…" value="${esc(d.store)}"></label>
       <label>Lien vers l’article<input id="f-url" class="field" inputmode="url" autocapitalize="off" placeholder="https://" value="${esc(d.url)}"></label>
       <label>Emplacement dans le logement<input id="f-loc" class="field" placeholder="Cuisine, chambre 2…" value="${esc(d.location)}"></label>
@@ -299,7 +305,7 @@ function openForm(item, asCopy = false) {
     const im = e.target.closest('img');
     if (im) { const k = +im.dataset.k; d.photos.unshift(d.photos.splice(k, 1)[0]); drawPhotos(); }
   };
-  $('#f-files', sheet).onchange = async e => {
+  const addFiles = async e => {
     const files = [...e.target.files];
     if (!files.length) return;
     toast('Traitement des photos…');
@@ -309,6 +315,8 @@ function openForm(item, asCopy = false) {
     }
     e.target.value = '';
   };
+  $('#f-files', sheet).onchange = addFiles;
+  $('#f-cam', sheet).onchange = addFiles;
 
   $('#f-save', sheet).onclick = async () => {
     const name = $('#f-name', sheet).value.trim();
@@ -318,6 +326,7 @@ function openForm(item, asCopy = false) {
     d.cat = sel.value === '__new' ? '' : sel.value;
     d.qty = Math.max(1, parseInt($('#f-qty', sheet).value, 10) || 1);
     d.price = isNaN(pr) ? null : pr;
+    d.date = $('#f-date', sheet).value;
     d.store = $('#f-store', sheet).value.trim();
     d.url = fixUrl($('#f-url', sheet).value);
     d.location = $('#f-loc', sheet).value.trim();
@@ -537,8 +546,8 @@ async function exportJSON() {
 
 function exportCSV() {
   const q = v => '"' + String(v ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
-  const head = ['Catégorie', 'Nom', 'Quantité', 'Prix unitaire', 'Total', 'Lieu d’achat', 'Emplacement', 'Lien', 'Descriptif', 'Notes'];
-  const rows = items.map(i => [catName(i.cat), i.name, i.qty || 1, i.price != null ? String(i.price).replace('.', ',') : '', i.price != null ? String(i.price * (i.qty || 1)).replace('.', ',') : '', i.store, i.location, i.url, i.description, i.notes].map(q).join(';'));
+  const head = ['Catégorie', 'Nom', 'Quantité', 'Prix unitaire', 'Total', 'Date d’achat', 'Lieu d’achat', 'Emplacement', 'Lien', 'Descriptif', 'Notes'];
+  const rows = items.map(i => [catName(i.cat), i.name, i.qty || 1, i.price != null ? String(i.price).replace('.', ',') : '', i.price != null ? String(i.price * (i.qty || 1)).replace('.', ',') : '', i.date ? fmtDay(i.date) : '', i.store, i.location, i.url, i.description, i.notes].map(q).join(';'));
   download(new Blob(['\ufeff' + [head.map(q).join(';'), ...rows].join('\r\n')], { type: 'text/csv;charset=utf-8' }), `inventaire-${today()}.csv`);
 }
 
