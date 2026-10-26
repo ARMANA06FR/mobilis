@@ -526,7 +526,27 @@ function openReport(c) {
 
 /* ---------- réglages, sauvegarde ---------- */
 let installEvt = null;
-addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (state.tab === 'set') renderSettings(); });
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (state.tab === 'set' && !sheet.open) renderSettings(); });
+addEventListener('appinstalled', () => { installEvt = null; toast('Application installée.'); if (state.tab === 'set' && !sheet.open) renderSettings(); });
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function showInstallHelp() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  openSheet(`
+    <header class="sh-head"><button class="icon" data-close aria-label="Fermer">${ICON.back}</button><h2>Installer l’application</h2></header>
+    <div class="sh-body">
+      ${ios ? `<ol>
+        <li>Ouvrez cette page dans <strong>Safari</strong>.</li>
+        <li>Touchez le bouton <strong>Partager</strong> (carré avec une flèche).</li>
+        <li>Choisissez <strong>Sur l’écran d’accueil</strong>, puis <strong>Ajouter</strong>.</li>
+      </ol>` : `<ol>
+        <li>Ouvrez cette page dans <strong>Chrome</strong> (pas dans une fenêtre intégrée à une autre application).</li>
+        <li>Touchez le menu <strong>⋮</strong> en haut à droite.</li>
+        <li>Choisissez <strong>Installer l’application</strong> (ou <strong>Ajouter à l’écran d’accueil</strong>), puis confirmez.</li>
+      </ol>
+      <p class="muted">Si l’option n’apparaît pas : attendez quelques secondes sur la page, rechargez-la une fois, puis rouvrez le menu. L’adresse doit commencer par https://.</p>`}
+    </div>`);
+}
 
 function download(blob, name) {
   const a = document.createElement('a');
@@ -595,7 +615,7 @@ async function renderSettings() {
     <label class="btn wide danger">Restaurer en remplaçant tout<input id="imp2" type="file" accept="application/json,.json" hidden></label>
     <button class="btn wide" id="csv">Exporter en tableur (CSV, sans photos)</button>
     <h3>Application</h3>
-    ${installEvt ? '<button class="btn wide" id="inst">Installer sur l’écran d’accueil</button>' : '<p class="muted">Pour l’installer : menu du navigateur, puis « Installer l’application » ou « Ajouter à l’écran d’accueil ».</p>'}
+    ${isStandalone() ? '<p class="muted">Application déjà installée sur cet appareil.</p>' : '<button class="btn wide" id="inst">Installer sur l’écran d’accueil</button>'}
     ${persisted ? '<p class="muted">Stockage protégé contre le nettoyage automatique.</p>' : '<button class="btn wide" id="pers">Protéger les données contre le nettoyage automatique</button>'}
   </section>`;
   $('#exp').onclick = exportJSON;
@@ -603,7 +623,15 @@ async function renderSettings() {
   $('#imp1').onchange = e => { const f = e.target.files[0]; if (f) importJSON(f, false); e.target.value = ''; };
   $('#imp2').onchange = e => { const f = e.target.files[0]; if (f && confirm('Remplacer tout l’inventaire actuel par cette sauvegarde ?')) importJSON(f, true); e.target.value = ''; };
   const inst = $('#inst');
-  if (inst) inst.onclick = async () => { installEvt.prompt(); await installEvt.userChoice; installEvt = null; renderSettings(); };
+  if (inst) inst.onclick = async () => {
+    if (!installEvt) return showInstallHelp();
+    try {
+      installEvt.prompt();
+      await installEvt.userChoice;
+    } catch (e) { installEvt = null; return showInstallHelp(); }
+    installEvt = null;
+    renderSettings();
+  };
   const pers = $('#pers');
   if (pers) pers.onclick = async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Stockage protégé.' : 'Le navigateur a refusé : installez d’abord l’application.'); renderSettings(); };
 }
