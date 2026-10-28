@@ -66,10 +66,10 @@ async function migrateRooms(force = false) {
   const map = new Map(rooms.map(r => [norm(r.name), r]));
   for (const i of items) {
     const loc = (i.location || '').trim();
-    if (!loc || i.room) continue;
+    if (!loc || roomsOf(i).length) continue;
     let r = map.get(norm(loc));
     if (!r) { r = { id: uid(), name: loc, order: rooms.length + map.size }; await put('rooms', r); map.set(norm(loc), r); }
-    await put('items', { ...i, room: r.id, location: '' });
+    await put('items', { ...i, roomIds: [r.id], location: '' });
   }
   localStorage.setItem('roomsMigrated', '1');
   await loadAll();
@@ -84,14 +84,17 @@ async function seedRooms() {
 }
 
 const roomName = id => (rooms.find(r => r.id === id) || {}).name || '';
-const roomOk = (i, sel) => sel === 'all' || (sel === 'none' ? !rooms.some(r => r.id === i.room) : i.room === sel);
-const metaOf = i => [catName(i.cat), roomName(i.room), i.location].filter(Boolean).join(', ');
+const roomsOf = i => Array.isArray(i.roomIds) ? i.roomIds : (i.room ? [i.room] : []);
+const validRooms = i => roomsOf(i).filter(id => rooms.some(r => r.id === id));
+const roomNames = i => validRooms(i).map(roomName).join(' / ');
+const roomOk = (i, sel) => sel === 'all' || (sel === 'none' ? !validRooms(i).length : roomsOf(i).includes(sel));
+const metaOf = i => [catName(i.cat), roomNames(i), i.location].filter(Boolean).join(', ');
 const catName = id => (cats.find(c => c.id === id) || {}).name || 'Sans catégorie';
 const hayOf = i => {
   const k = i.id + ':' + (i.updated || 0) + ':' + i.cat;
   let h = hayCache.get(k);
   if (h === undefined) {
-    h = norm([i.name, i.description, i.store, i.url, i.location, i.notes, catName(i.cat), roomName(i.room)].join(' '));
+    h = norm([i.name, i.description, i.store, i.url, i.location, i.notes, catName(i.cat), roomNames(i)].join(' '));
     hayCache.set(k, h);
   }
   return h;
@@ -232,10 +235,10 @@ function refreshChips() {
 function refreshRooms() {
   const sel = $('#roomsel');
   if (!sel) return;
-  const orphan = items.filter(i => !rooms.some(r => r.id === i.room)).length;
+  const orphan = items.filter(i => !validRooms(i).length).length;
   if (state.room !== 'all' && !(state.room === 'none' && orphan) && !rooms.some(r => r.id === state.room)) state.room = 'all';
   sel.innerHTML = `<option value="all">Toutes les pièces (${items.length})</option>` +
-    rooms.map(r => `<option value="${esc(r.id)}">${esc(r.name)} (${items.filter(i => i.room === r.id).length})</option>`).join('') +
+    rooms.map(r => `<option value="${esc(r.id)}">${esc(r.name)} (${items.filter(i => roomsOf(i).includes(r.id)).length})</option>`).join('') +
     (orphan ? `<option value="none">Sans pièce (${orphan})</option>` : '');
   sel.value = state.room;
 }
@@ -270,7 +273,7 @@ function openDetail(id) {
         ${i.price != null ? row('Prix d’achat (unité)', eur(i.price)) + row('Total', eur(i.price * (i.qty || 1))) : ''}
         ${row('Date d’achat', i.date ? fmtDay(i.date) : '')}
         ${row('Lieu d’achat', i.store)}
-        ${row('Pièce', roomName(i.room))}
+        ${row(validRooms(i).length > 1 ? 'Pièces' : 'Pièce', roomNames(i))}
         ${row('Emplacement précis', i.location)}
       </dl>
       ${i.description ? `<h3>Descriptif du commerçant</h3><p class="prose">${esc(i.description)}</p>` : ''}
@@ -293,7 +296,8 @@ function openForm(item, asCopy = false) {
   const isNew = !item || asCopy;
   const d = item
     ? { ...item, photos: [...(item.photos || [])] }
-    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, date: today(), room: (state.room !== 'all' && state.room !== 'none') ? state.room : '', store: '', url: '', description: '', location: '', notes: '', photos: [] };
+    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, date: today(), roomIds: (state.room !== 'all' && state.room !== 'none') ? [state.room] : [], store: '', url: '', description: '', location: '', notes: '', photos: [] };
+  d.roomIds = roomsOf(d); delete d.room;
   if (asCopy) { d.id = uid(); d.name = d.name + ' (copie)'; delete d.created; }
 
   openSheet(`
@@ -306,10 +310,8 @@ function openForm(item, asCopy = false) {
         <label class="btn pick">Choisir dans la galerie<input id="f-files" type="file" accept="image/*" multiple hidden></label>
       </div>
       <label>Nom de l’article<input id="f-name" class="field" autocomplete="off" value="${esc(d.name)}"></label>
-      <div class="two">
-        <label>Catégorie<select id="f-cat"></select></label>
-        <label>Pièce<select id="f-room"></select></label>
-      </div>
+      <label>Catégorie<select id="f-cat"></select></label>
+      <fieldset class="roomset"><legend>Pièces où se trouve cet article</legend><div id="f-rooms" class="roomchecks"></div></fieldset>
       <div class="two">
         <label>Quantité<input id="f-qty" class="field" type="number" min="1" inputmode="numeric" value="${d.qty || 1}"></label>
         <label>Prix d’achat par unité (€)<input id="f-price" class="field" inputmode="decimal" value="${d.price != null ? String(d.price).replace('.', ',') : ''}"></label>
@@ -339,8 +341,7 @@ function openForm(item, asCopy = false) {
     drawCats(c.id); lastCat = c.id;
   };
 
-  const roomSel = $('#f-room', sheet);
-  bindRoomSelect(roomSel, d.room);
+  const getRooms = bindRoomChecks($('#f-rooms', sheet), d.roomIds);
 
   const phBox = $('#ph', sheet);
   const drawPhotos = () => {
@@ -372,7 +373,8 @@ function openForm(item, asCopy = false) {
     const pr = parseFloat(String($('#f-price', sheet).value).replace(/\s/g, '').replace(',', '.'));
     d.name = name;
     d.cat = sel.value === '__new' ? '' : sel.value;
-    d.room = roomSel.value === '__new' ? '' : roomSel.value;
+    d.roomIds = getRooms();
+    delete d.room;
     d.qty = Math.max(1, parseInt($('#f-qty', sheet).value, 10) || 1);
     d.price = isNaN(pr) ? null : pr;
     d.date = $('#f-date', sheet).value;
@@ -393,27 +395,32 @@ function openForm(item, asCopy = false) {
 }
 
 /* ---------- pièces ---------- */
-function bindRoomSelect(sel, value) {
-  const draw = v => {
-    sel.innerHTML = '<option value="">Aucune pièce</option>' + rooms.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('') + '<option value="__new">+ Nouvelle pièce…</option>';
-    sel.value = (v === '' || rooms.some(r => r.id === v)) ? v : '';
+function bindRoomChecks(box, selected) {
+  const sel = new Set(selected || []);
+  const draw = () => {
+    box.innerHTML = (rooms.map(r => `<label class="chk"><input type="checkbox" value="${esc(r.id)}"${sel.has(r.id) ? ' checked' : ''}><span>${esc(r.name)}</span></label>`).join('') || '<p class="hint">Aucune pièce : ajoutez-en une.</p>')
+      + '<button type="button" class="chip ghost" data-newroom>+ Nouvelle pièce</button>';
   };
-  draw(value || '');
-  let last = sel.value;
-  sel.onchange = async () => {
-    if (sel.value !== '__new') { last = sel.value; return; }
+  draw();
+  box.onchange = e => {
+    if (!e.target.matches('input[type=checkbox]')) return;
+    if (e.target.checked) sel.add(e.target.value); else sel.delete(e.target.value);
+  };
+  box.onclick = async e => {
+    if (!e.target.closest('[data-newroom]')) return;
     const name = (prompt('Nom de la nouvelle pièce') || '').trim();
-    if (!name) { sel.value = last; return; }
+    if (!name) return;
     const r = { id: uid(), name, order: rooms.length };
     await put('rooms', r); await loadAll();
-    draw(r.id); last = r.id;
+    sel.add(r.id); draw();
   };
+  return () => rooms.map(r => r.id).filter(id => sel.has(id));
 }
 
 function openRooms() {
   const draw = () => {
     $('#room-list', sheet).innerHTML = rooms.map(r => {
-      const n = items.filter(i => i.room === r.id).length;
+      const n = items.filter(i => roomsOf(i).includes(r.id)).length;
       return `<div class="catrow"><span class="body"><strong>${esc(r.name)}</strong><span class="meta">${n} article${n > 1 ? 's' : ''}</span></span>
         <button class="icon" data-ren="${r.id}" aria-label="Renommer ${esc(r.name)}">${ICON.edit}</button>
         <button class="icon" data-del="${r.id}" aria-label="Supprimer ${esc(r.name)}">${ICON.trash}</button></div>`;
@@ -442,9 +449,9 @@ function openRooms() {
       if (name) { await put('rooms', { ...r, name }); await loadAll(); draw(); }
     } else if (x) {
       const r = rooms.find(r => r.id === x.dataset.del);
-      const n = items.filter(i => i.room === r.id).length;
+      const n = items.filter(i => roomsOf(i).includes(r.id)).length;
       if (!confirm(n ? `Supprimer « ${r.name} » ? Ses ${n} article(s) passeront en « Sans pièce ».` : `Supprimer « ${r.name} » ?`)) return;
-      for (const i of items.filter(i => i.room === r.id)) await put('items', { ...i, room: '', updated: Date.now() });
+      for (const i of items.filter(i => roomsOf(i).includes(r.id))) await put('items', { ...i, roomIds: roomsOf(i).filter(id => id !== r.id), updated: Date.now() });
       await del('rooms', r.id); await loadAll(); draw();
     }
   };
@@ -566,9 +573,9 @@ function openControl(ctrl) {
   const fillRoom = () => {
     const sel = $('#c-room', sheet);
     const done = list => list.filter(i => ctrl.found[i.id] !== undefined).length;
-    const orphan = items.filter(i => !rooms.some(r => r.id === i.room));
+    const orphan = items.filter(i => !validRooms(i).length);
     sel.innerHTML = `<option value="all">Toutes les pièces (${done(items)}/${items.length})</option>` +
-      rooms.map(r => { const l = items.filter(i => i.room === r.id); return `<option value="${esc(r.id)}">${esc(r.name)} (${done(l)}/${l.length})</option>`; }).join('') +
+      rooms.map(r => { const l = items.filter(i => roomsOf(i).includes(r.id)); return `<option value="${esc(r.id)}">${esc(r.name)} (${done(l)}/${l.length})</option>`; }).join('') +
       (orphan.length ? `<option value="none">Sans pièce (${done(orphan)}/${orphan.length})</option>` : '');
     sel.value = cf.room;
   };
@@ -602,7 +609,7 @@ function openControl(ctrl) {
     ctrl.finished = Date.now();
     ctrl.total = items.length;
     ctrl.missing = items.filter(i => ctrl.found[i.id] !== undefined && ctrl.found[i.id] < (i.qty || 1))
-      .map(i => ({ id: i.id, name: i.name, cat: catName(i.cat), room: roomName(i.room), location: i.location, qty: i.qty || 1, missing: (i.qty || 1) - ctrl.found[i.id], price: i.price, store: i.store, url: i.url }));
+      .map(i => ({ id: i.id, name: i.name, cat: catName(i.cat), room: roomNames(i), location: i.location, qty: i.qty || 1, missing: (i.qty || 1) - ctrl.found[i.id], price: i.price, store: i.store, url: i.url }));
     ctrl.unchecked = unchecked.map(i => ({ name: i.name, qty: i.qty || 1 }));
     await put('controls', ctrl); await loadAll();
     openReport(ctrl);
@@ -690,7 +697,7 @@ async function exportJSON() {
 function exportCSV() {
   const q = v => '"' + String(v ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
   const head = ['Catégorie', 'Nom', 'Quantité', 'Prix unitaire', 'Total', 'Date d’achat', 'Lieu d’achat', 'Pièce', 'Emplacement précis', 'Lien', 'Descriptif', 'Notes'];
-  const rows = items.map(i => [catName(i.cat), i.name, i.qty || 1, i.price != null ? String(i.price).replace('.', ',') : '', i.price != null ? String(i.price * (i.qty || 1)).replace('.', ',') : '', i.date ? fmtDay(i.date) : '', i.store, roomName(i.room), i.location, i.url, i.description, i.notes].map(q).join(';'));
+  const rows = items.map(i => [catName(i.cat), i.name, i.qty || 1, i.price != null ? String(i.price).replace('.', ',') : '', i.price != null ? String(i.price * (i.qty || 1)).replace('.', ',') : '', i.date ? fmtDay(i.date) : '', i.store, roomNames(i), i.location, i.url, i.description, i.notes].map(q).join(';'));
   download(new Blob(['\ufeff' + [head.map(q).join(';'), ...rows].join('\r\n')], { type: 'text/csv;charset=utf-8' }), `inventaire-${today()}.csv`);
 }
 

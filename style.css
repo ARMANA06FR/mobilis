@@ -132,3 +132,10 @@ dialog#sheet[open]{display:flex;flex-direction:column;animation:up .18s ease-out
 .roomrow{display:flex;gap:8px;padding:0 12px 4px}
 .roomrow select{flex:1;min-width:0}
 .roomrow .btn{flex:none;padding:10px 12px;font-size:.9rem}
+
+.roomset{border:1px solid var(--line);border-radius:var(--radius);padding:4px 12px 12px;margin:14px 0 0;background:var(--surface)}
+.roomset legend{padding:0 6px;color:var(--muted);font-size:.9rem}
+.roomchecks{display:flex;flex-wrap:wrap;gap:8px}
+.form .chk{display:flex;align-items:center;gap:8px;margin:0;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--bg);color:var(--ink);font-size:.95rem}
+.chk input{width:20px;height:20px;margin:0;accent-color:var(--accent)}
+.form .chk:has(input:checked){border-color:var(--accent)}
