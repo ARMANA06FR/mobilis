@@ -128,3 +128,7 @@ dialog#sheet[open]{display:flex;flex-direction:column;animation:up .18s ease-out
 .form .pickrow{margin-top:8px}
 .form .pickrow .pick{margin:0;font-size:.9rem;padding:12px 8px}
 .form input[type=date]{min-height:48px}
+
+.roomrow{display:flex;gap:8px;padding:0 12px 4px}
+.roomrow select{flex:1;min-width:0}
+.roomrow .btn{flex:none;padding:10px 12px;font-size:.9rem}
