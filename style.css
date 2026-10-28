@@ -139,3 +139,14 @@ dialog#sheet[open]{display:flex;flex-direction:column;animation:up .18s ease-out
 .form .chk{display:flex;align-items:center;gap:8px;margin:0;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--bg);color:var(--ink);font-size:.95rem}
 .chk input{width:20px;height:20px;margin:0;accent-color:var(--accent)}
 .form .chk:has(input:checked){border-color:var(--accent)}
+
+.lbl{margin:12px 0 4px;font-size:.9rem;color:var(--muted)}
+.multi{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+.multi summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 14px;cursor:pointer}
+.multi summary::-webkit-details-marker{display:none}
+.multi summary::after{content:"▾";flex:none;color:var(--muted)}
+.multi[open] summary::after{content:"▴"}
+.multi-panel{border-top:1px solid var(--line);padding:6px 10px;max-height:280px;overflow-y:auto}
+.form .opt{display:flex;align-items:center;gap:12px;margin:0;padding:10px 4px;color:var(--ink);font-size:1rem}
+.opt input{width:22px;height:22px;margin:0;accent-color:var(--accent)}
+.multi-panel .link{padding:10px 4px;font-size:.95rem}

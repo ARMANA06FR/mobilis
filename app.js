@@ -311,7 +311,8 @@ function openForm(item, asCopy = false) {
       </div>
       <label>Nom de l’article<input id="f-name" class="field" autocomplete="off" value="${esc(d.name)}"></label>
       <label>Catégorie<select id="f-cat"></select></label>
-      <fieldset class="roomset"><legend>Pièces où se trouve cet article</legend><div id="f-rooms" class="roomchecks"></div></fieldset>
+      <div class="lbl">Pièces où se trouve cet article</div>
+      <details class="multi" id="f-rooms"><summary></summary><div class="multi-panel"></div></details>
       <div class="two">
         <label>Quantité<input id="f-qty" class="field" type="number" min="1" inputmode="numeric" value="${d.qty || 1}"></label>
         <label>Prix d’achat par unité (€)<input id="f-price" class="field" inputmode="decimal" value="${d.price != null ? String(d.price).replace('.', ',') : ''}"></label>
@@ -397,16 +398,23 @@ function openForm(item, asCopy = false) {
 /* ---------- pièces ---------- */
 function bindRoomChecks(box, selected) {
   const sel = new Set(selected || []);
+  const sum = box.querySelector('summary'), panel = box.querySelector('.multi-panel');
+  const label = () => {
+    const n = rooms.filter(r => sel.has(r.id)).map(r => r.name);
+    sum.textContent = n.length ? n.join(', ') : 'Choisir une ou plusieurs pièces';
+  };
   const draw = () => {
-    box.innerHTML = (rooms.map(r => `<label class="chk"><input type="checkbox" value="${esc(r.id)}"${sel.has(r.id) ? ' checked' : ''}><span>${esc(r.name)}</span></label>`).join('') || '<p class="hint">Aucune pièce : ajoutez-en une.</p>')
-      + '<button type="button" class="chip ghost" data-newroom>+ Nouvelle pièce</button>';
+    panel.innerHTML = (rooms.map(r => `<label class="opt"><input type="checkbox" value="${esc(r.id)}"${sel.has(r.id) ? ' checked' : ''}><span>${esc(r.name)}</span></label>`).join('') || '<p class="hint">Aucune pièce : ajoutez-en une.</p>')
+      + '<button type="button" class="link" data-newroom>+ Nouvelle pièce</button>';
+    label();
   };
   draw();
-  box.onchange = e => {
+  panel.onchange = e => {
     if (!e.target.matches('input[type=checkbox]')) return;
     if (e.target.checked) sel.add(e.target.value); else sel.delete(e.target.value);
+    label();
   };
-  box.onclick = async e => {
+  panel.onclick = async e => {
     if (!e.target.closest('[data-newroom]')) return;
     const name = (prompt('Nom de la nouvelle pièce') || '').trim();
     if (!name) return;
