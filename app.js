@@ -388,40 +388,110 @@ function bindCatSelect(sel, value) {
   };
 }
 
-// Branche le bouton « Remplir automatiquement » d'un formulaire (pre = 'f' inventaire, 'w' liste d'envie)
-function bindAutofill(pre, sel, photos) {
+// Repli quand la page ne peut pas être lue : on déduit ce qu'on peut du lien et du titre du partage
+const STORE_NAMES = {
+  'leroymerlin.fr': 'Leroy Merlin', 'castorama.fr': 'Castorama', 'bricodepot.fr': 'Brico Dépôt', 'bricomarche.com': 'Bricomarché',
+  'mr-bricolage.fr': 'Mr Bricolage', 'bricoman.fr': 'Bricoman', 'amazon.fr': 'Amazon', 'amazon.com': 'Amazon', 'amzn.eu': 'Amazon',
+  'amzn.to': 'Amazon', 'a.co': 'Amazon', 'manomano.fr': 'ManoMano', 'cdiscount.com': 'Cdiscount', 'ikea.com': 'Ikea',
+  'maisonsdumonde.com': 'Maisons du Monde', 'conforama.fr': 'Conforama', 'but.fr': 'But', 'darty.com': 'Darty',
+  'boulanger.com': 'Boulanger', 'fnac.com': 'Fnac', 'lapeyre.fr': 'Lapeyre', 'point-p.fr': 'Point.P', 'lidl.fr': 'Lidl',
+  'action.com': 'Action', 'gifi.fr': 'Gifi', 'leclercbricolage.fr': 'E.Leclerc', 'toolstation.fr': 'Toolstation', 'ubaldi.com': 'Ubaldi',
+};
+function storeFromUrl(link) {
+  try {
+    const h = new URL(link).hostname.replace(/^www\./, '').toLowerCase();
+    for (const k of Object.keys(STORE_NAMES)) if (h === k || h.endsWith('.' + k)) return STORE_NAMES[k];
+    const base = h.split('.').slice(-2, -1)[0] || '';
+    return base ? base.charAt(0).toUpperCase() + base.slice(1) : '';
+  } catch (e) { return ''; }
+}
+function nameFromUrl(link) {
+  let u;
+  try { u = new URL(link); } catch (e) { return ''; }
+  const segs = u.pathname.split('/').map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } }).filter(Boolean);
+  const SKIP = /^(dp|gp|product|produit|produits|p|ref|prd|pd|article|item|fr|html|detail|pdp)$/i;
+  let best = '', bestN = 0;
+  for (const seg of segs) {
+    const words = seg.replace(/\.(html?|php|aspx?|prd)$/i, '').split(/[-_+\s]+/)
+      .filter(w => w && !/^\d{5,}$/.test(w) && !(/\d/.test(w) && /[a-z]/i.test(w) && w.length >= 8) && !SKIP.test(w));
+    const alpha = words.filter(w => /[a-zà-ÿ]{3,}/i.test(w)).length;
+    if (alpha >= 2 && alpha > bestN) { best = words.join(' '); bestN = alpha; }
+  }
+  return best ? best.charAt(0).toUpperCase() + best.slice(1) : '';
+}
+// titre transmis par le menu « Partager » (Chrome : titre de la page ; applis de magasin : texte d'accroche)
+function shareTitle(title, text) {
+  const strip = s => String(s || '').replace(/https?:\/\/\S+/gi, ' ').replace(/\s+/g, ' ').trim();
+  let t = strip(title);
+  if (t.length < 4) t = strip(text).replace(/^(découvrez|decouvrez|regardez ça|regarde ça|regardez|regarde|check out|jetez un œil à|voici)\s*:?\s*/i, '');
+  t = t.replace(/\s*[:|–—-]\s*$/, '').replace(/\s+sur\s+[\w.\-]+$/i, '').replace(/^amazon(\.fr)?\s*[:|–—-]\s*/i, '');
+  t = t.replace(/\s*[|–—-]\s*(leroy merlin|castorama|brico d[ée]p[oô]t|bricomarch[ée]|ikea|amazon[\w.]*|manomano|cdiscount|conforama|but|darty|maisons du monde)\s*$/i, '');
+  if (/^[\w.-]+\.(fr|com|eu|net)$/i.test(t)) return '';
+  return t.length >= 4 && t.length <= 200 ? t : '';
+}
+
+// Branche le bouton « Remplir automatiquement » d'un formulaire ; hint = titre reçu par « Partager »
+function bindAutofill(pre, sel, photos, hint) {
   const g = id => $('#' + pre + '-' + id, sheet);
   const urlEl = g('url'), btn = g('auto'), msg = g('automsg');
   let busy = false;
   const setIf = (id, v) => { const el = g(id); if (el && v && !el.value.trim()) { el.value = v; return true; } return false; };
+  const applyStore = name => {
+    const st = g('store');
+    if (!st || !name) return false;
+    if (!st.value.trim()) { st.value = name; return true; }
+    return false;
+  };
+  const applyCat = name => {
+    const gc = guessCat(name);
+    if (!gc) return false;
+    sel.value = gc; sel.dispatchEvent(new Event('change'));
+    return true;
+  };
+  // repli : nom (titre du partage ou adresse), magasin et catégorie, sans lire la page
+  const fallback = link => {
+    const got = [];
+    const nameWasEmpty = !g('name').value.trim();
+    const guess = hint || nameFromUrl(link);
+    if (setIf('name', guess)) got.push('nom');
+    if (applyStore(storeFromUrl(link))) got.push('magasin');
+    if (nameWasEmpty && got.includes('nom') && applyCat(guess)) got.push('catégorie');
+    return got;
+  };
   const run = async () => {
     if (busy) return;
     const link = firstLink(urlEl.value);
     if (!link) { toast('Collez d’abord le lien de l’article.'); urlEl.focus(); return; }
-    if (!relayUrl()) { msg.textContent = 'Le remplissage automatique n’est pas encore réglé : allez dans Réglages > Remplissage automatique.'; return; }
     busy = true; btn.disabled = true;
-    msg.textContent = 'Lecture de la page en cours…';
     try {
-      const p = await relayGet('?url=' + encodeURIComponent(link));
-      if (!p || !p.ok) {
-        msg.textContent = p && p.error === 'blocked' ? 'Ce site refuse la lecture automatique. Remplissez à la main : le lien est conservé.'
-          : p && p.error === 'empty' ? 'Aucune information trouvée sur cette page. Remplissez à la main.'
-          : 'La page n’a pas pu être lue. Remplissez à la main.';
+      let p = null, err = '';
+      if (relayUrl()) {
+        msg.textContent = 'Lecture de la page en cours…';
+        try {
+          p = await relayGet('?url=' + encodeURIComponent(link));
+          if (!p || !p.ok) { err = (p && p.error) || 'fail'; p = null; }
+        } catch (e) { err = 'network'; }
+      } else err = 'no-relay';
+      if (!p) {
+        const why = err === 'no-relay' ? 'Le relais n’est pas réglé (Réglages > Remplissage automatique).'
+          : err === 'blocked' ? 'Ce site refuse la lecture automatique.'
+          : err === 'empty' ? 'Aucune information lisible sur cette page.'
+          : err === 'network' ? 'Le relais ne répond pas.'
+          : 'La page n’a pas pu être lue.';
+        const got = fallback(link);
+        msg.textContent = got.length ? `${why} J’ai rempli d’après le lien : ${got.join(', ')}. Complétez le prix et la photo.` : `${why} Remplissez à la main : le lien est conservé.`;
         return;
       }
       urlEl.value = p.finalUrl || link;
       const got = [];
       const nameWasEmpty = !g('name').value.trim();
-      if (setIf('name', p.name)) got.push('nom');
+      const name = p.name || hint || nameFromUrl(link);
+      if (setIf('name', name)) got.push('nom');
       if (p.price != null && setIf('price', p.price.toFixed(2).replace('.', ','))) got.push('prix');
       if (g('desc') && setIf('desc', p.description)) got.push('descriptif');
       if (setIf('notes', [p.brand && 'Marque : ' + p.brand, p.sku && 'Réf. : ' + p.sku].filter(Boolean).join(' – '))) got.push('référence');
-      const st = g('store');
-      if (p.store && st && !st.value.trim()) { st.value = p.store; got.push('magasin'); }
-      if (nameWasEmpty && got.includes('nom')) {
-        const gc = guessCat(p.name);
-        if (gc) { sel.value = gc; sel.dispatchEvent(new Event('change')); got.push('catégorie'); }
-      }
+      if (applyStore(p.store || storeFromUrl(link))) got.push('magasin');
+      if (nameWasEmpty && got.includes('nom') && applyCat(name)) got.push('catégorie');
       let photoMsg = '';
       if (photos && p.image && photos.count() === 0) {
         try {
@@ -431,8 +501,6 @@ function bindAutofill(pre, sel, photos) {
         } catch (e) { photoMsg = ' La photo n’a pas pu être récupérée.'; }
       }
       msg.textContent = (got.length ? 'Rempli : ' + got.join(', ') + '. Vérifiez puis enregistrez.' : 'Les champs étaient déjà remplis, rien n’a été changé.') + photoMsg;
-    } catch (e) {
-      msg.textContent = 'Le relais ne répond pas. Vérifiez la connexion et l’adresse dans Réglages > Remplissage automatique.';
     } finally { busy = false; btn.disabled = false; }
   };
   btn.onclick = run;
@@ -491,7 +559,7 @@ function openForm(item, asCopy = false, opts = {}) {
   const getRooms = bindRoomChecks($('#f-rooms', sheet), d.roomIds);
 
   const drawPhotos = bindPhotoPicker('f', d);
-  const runAuto = bindAutofill('f', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawPhotos(); } });
+  const runAuto = bindAutofill('f', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawPhotos(); } }, opts.title);
   if (opts.auto && d.url) runAuto();
 
   $('#f-save', sheet).onclick = async () => {
@@ -740,7 +808,7 @@ function openWishForm(w, opts = {}) {
   bindCatSelect(sel, d.cat);
   const getRooms = bindRoomChecks($('#w-rooms', sheet), d.roomIds);
   const drawWishPhotos = bindPhotoPicker('w', d);
-  const runAutoW = bindAutofill('w', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawWishPhotos(); } });
+  const runAutoW = bindAutofill('w', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawWishPhotos(); } }, opts.title);
   if (opts.auto && d.url) runAutoW();
   const collect = () => {
     const name = $('#w-name', sheet).value.trim();
@@ -1075,6 +1143,7 @@ function handleShare() {
   const q = new URLSearchParams(location.search);
   if (!q.has('url') && !q.has('text') && !q.has('title')) return;
   const link = firstLink(q.get('url'), q.get('text'), q.get('title'));
+  const title = shareTitle(q.get('title'), q.get('text'));
   history.replaceState(null, '', location.pathname);
   if (!link) { toast('Aucun lien trouvé dans ce partage.'); return; }
   openSheet(`
@@ -1084,8 +1153,8 @@ function handleShare() {
       <button class="btn primary wide" id="sh-inv">Je l’ai déjà : l’ajouter à l’inventaire</button>
       <button class="btn wide" id="sh-wish">Je le veux : liste d’envie</button>
     </div>`);
-  $('#sh-inv', sheet).onclick = () => openForm(null, false, { link, auto: true });
-  $('#sh-wish', sheet).onclick = () => { setTab('wish'); openWishForm(null, { link, auto: true }); };
+  $('#sh-inv', sheet).onclick = () => openForm(null, false, { link, auto: true, title });
+  $('#sh-wish', sheet).onclick = () => { setTab('wish'); openWishForm(null, { link, auto: true, title }); };
 }
 
 /* ---------- démarrage ---------- */
