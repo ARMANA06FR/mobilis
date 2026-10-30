@@ -21,4 +21,4 @@ descriptif du commerçant, prix, quantité, lieu d'achat, lien, recherche par mo
 - Réglages > « Remplissage automatique » : coller l'adresse du relais (`https://….workers.dev`), puis « Enregistrer et tester ».
 - Dans un formulaire : coller un lien dans « Lien vers l'article » remplit nom, prix, photo, descriptif, magasin et catégorie.
 - Android : application installée, « Partager » depuis le navigateur ou l'application d'un magasin > « Inventaire du logement ».
-- `VERSION` dans `sw.js` : `inventaire-v7`.
+- `VERSION` dans `sw.js` : `inventaire-v8`.
