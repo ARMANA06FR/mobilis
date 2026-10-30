@@ -22,10 +22,10 @@ const ICON = {
 /* ---------- base de données locale (IndexedDB) ---------- */
 let db;
 const openDB = () => new Promise((res, rej) => {
-  const r = indexedDB.open('inventaire-logement', 2);
+  const r = indexedDB.open('inventaire-logement', 3);
   r.onupgradeneeded = () => {
     const d = r.result;
-    for (const n of ['items', 'categories', 'controls', 'rooms']) if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: 'id' });
+    for (const n of ['items', 'categories', 'controls', 'rooms', 'wishes']) if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: 'id' });
   };
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
@@ -38,14 +38,14 @@ const del = (n, id) => wrap(store(n, 'readwrite').delete(id));
 const clearStore = n => wrap(store(n, 'readwrite').clear());
 
 /* ---------- état ---------- */
-const state = { q: '', cat: 'all', room: 'all', tab: 'inv' };
-let items = [], cats = [], controls = [], rooms = [];
+const state = { q: '', cat: 'all', room: 'all', tab: 'inv', wq: '' };
+let items = [], cats = [], controls = [], rooms = [], wishes = [];
 const view = $('#view');
 const sheet = $('#sheet');
 const hayCache = new Map();
 
 async function loadAll() {
-  [items, cats, controls, rooms] = await Promise.all([getAll('items'), getAll('categories'), getAll('controls'), getAll('rooms')]);
+  [items, cats, controls, rooms, wishes] = await Promise.all([getAll('items'), getAll('categories'), getAll('controls'), getAll('rooms'), getAll('wishes')]);
   cats.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name, 'fr'));
   rooms.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name, 'fr'));
   items.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
@@ -171,13 +171,14 @@ const thumbHtml = i => {
 };
 
 /* ---------- navigation ---------- */
-const TITLES = { inv: 'Inventaire du logement', ctl: 'Contrôle de départ', set: 'Réglages et sauvegarde' };
+const TITLES = { inv: 'Inventaire du logement', ctl: 'Contrôle de départ', wish: 'Liste d’envie', set: 'Réglages et sauvegarde' };
 function setTab(t) {
   state.tab = t;
   document.querySelectorAll('.tabs button').forEach(b => { if (b.dataset.tab === t) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   $('#title').textContent = TITLES[t];
   if (t === 'inv') renderInventory();
   else if (t === 'ctl') renderControlTab();
+  else if (t === 'wish') renderWishlist();
   else renderSettings();
   view.scrollTop = 0;
 }
@@ -185,6 +186,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setTab(
 function refreshCurrent() {
   if (state.tab === 'inv') { if ($('#list')) { refreshChips(); refreshList(); } else renderInventory(); }
   else if (state.tab === 'ctl') renderControlTab();
+  else if (state.tab === 'wish') { if ($('#wlist')) refreshWish(); else renderWishlist(); }
   else renderSettings();
 }
 
@@ -291,24 +293,166 @@ function openDetail(id) {
   if (g) g.onclick = e => { const im = e.target.closest('img'); if (im) lightbox(im.src); };
 }
 
+/* ---------- remplissage automatique depuis un lien ---------- */
+const relayUrl = () => (localStorage.getItem('relayLogement') || localStorage.getItem('relayOutils') || '').trim().replace(/\/+$/, '');
+const firstLink = (...parts) => { const m = parts.filter(Boolean).join(' ').match(/https?:\/\/[^\s<>"']+/i); return m ? m[0].replace(/[).,;]+$/, '') : ''; };
+
+// mots-clés (sans accents) -> nom de catégorie par défaut
+const CAT_RULES = [
+  ['Électroménager', ['aspirateur', 'lave-linge', 'lave linge', 'lave-vaisselle', 'four', 'micro-ondes', 'micro ondes', 'refrigerateur', 'frigo', 'congelateur', 'cafetiere', 'bouilloire', 'grille-pain', 'fer a repasser', 'seche-cheveux', 'seche cheveux', 'ventilateur', 'climatiseur', 'radiateur', 'plaque de cuisson', 'hotte', 'robot', 'machine a cafe', 'seche-linge', 'televiseur', 'television', 'tv', 'blender', 'mixeur', 'friteuse', 'air fryer', 'centrale vapeur']],
+  ['Éclairage', ['lampe', 'lampadaire', 'suspension', 'applique', 'ampoule', 'plafonnier', 'spot', 'guirlande lumineuse', 'abat-jour', 'luminaire', 'lustre', 'veilleuse', 'led']],
+  ['Robinetterie et sanitaires', ['robinet', 'mitigeur', 'douche', 'douchette', 'pommeau', 'lavabo', 'vasque', 'wc', 'toilette', 'abattant', 'siphon', 'receveur', 'paroi', 'colonne de douche', 'evier', 'bonde']],
+  ['Linge de lit', ['drap', 'housse de couette', 'couette', 'oreiller', 'taie', 'alese', 'protege-matelas', 'protege matelas', 'couvre-lit', 'traversin', 'parure', 'couverture', 'surmatelas']],
+  ['Linge de bain', ['serviette', 'drap de bain', 'peignoir', 'tapis de bain', 'gant de toilette', 'linge de bain']],
+  ['Ustensiles de cuisine', ['poele', 'casserole', 'cocotte', 'spatule', 'louche', 'fouet', 'passoire', 'planche a decouper', 'ouvre-boite', 'tire-bouchon', 'econome', 'rape', 'moule', 'faitout', 'wok', 'couteau de cuisine', 'minuteur', 'balance de cuisine', 'ustensile', 'egouttoir', 'presse-agrume']],
+  ['Vaisselle', ['assiette', 'verre', 'tasse', 'mug', 'bol', 'couvert', 'fourchette', 'couteau', 'cuillere', 'plat', 'saladier', 'carafe', 'service', 'theiere', 'ramequin', 'plateau', 'coupelle', 'flute', 'vaisselle']],
+  ['Décoration', ['cadre', 'tableau', 'miroir', 'vase', 'coussin', 'plaid', 'rideau', 'voilage', 'tapis', 'bougie', 'affiche', 'plante', 'horloge', 'deco', 'statue', 'photophore', 'panier', 'sticker', 'guirlande', 'cache-pot', 'cache pot', 'tringle']],
+  ['Mobilier', ['canape', 'fauteuil', 'chaise', 'table', 'lit', 'matelas', 'sommier', 'commode', 'armoire', 'etagere', 'bureau', 'bibliotheque', 'buffet', 'meuble', 'tabouret', 'banc', 'console', 'chevet', 'tete de lit', 'penderie', 'porte-manteau', 'vitrine', 'banquette', 'pouf', 'cadre de lit', 'dressing', 'bout de canape', 'clic-clac', 'convertible']],
+  ['Équipements divers', ['poubelle', 'etendoir', 'cintre', 'balai', 'seau', 'verrou', 'detecteur', 'extincteur', 'boite a cles', 'serrure', 'valise', 'panier a linge', 'rangement', 'escabeau', 'tapis de sol', 'moustiquaire']],
+];
+function guessCat(name) {
+  const n = ' ' + norm(name) + ' ';
+  let best = null, bestScore = 0;
+  for (const [label, words] of CAT_RULES) {
+    let sc = 0;
+    for (const w of words) if (new RegExp('[^a-z0-9]' + w.replace(/[-\s]/g, '[- ]') + 's?(?![a-z0-9])').test(n)) sc++;
+    if (sc > bestScore) { best = label; bestScore = sc; }
+  }
+  if (!best) return '';
+  const c = cats.find(x => norm(x.name) === norm(best));
+  return c ? c.id : '';
+}
+
+async function relayGet(path, asBlob) {
+  const base = relayUrl();
+  if (!base) throw new Error('no-relay');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const r = await fetch(base + '/' + path, { signal: ctrl.signal });
+    if (asBlob) { if (!r.ok) throw new Error('no-image'); return await r.blob(); }
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+
+/* ---------- sélecteur de photos (inventaire et liste d'envie) ---------- */
+function photoPickerHtml(pre) {
+  return `<div class="photos" id="${pre}-ph"></div>
+      <p class="hint">Touchez une photo pour en faire la vignette (bordure colorée).</p>
+      <div class="two pickrow">
+        <label class="btn pick">Prendre une photo<input id="${pre}-cam" type="file" accept="image/*" capture="environment" hidden></label>
+        <label class="btn pick">Choisir dans la galerie<input id="${pre}-files" type="file" accept="image/*" multiple hidden></label>
+      </div>`;
+}
+function bindPhotoPicker(pre, d) {
+  const phBox = $('#' + pre + '-ph', sheet);
+  const draw = () => {
+    phBox.innerHTML = d.photos.map((p, k) => `<div class="pt"><img src="${urlOf(p.thumb)}" data-k="${k}" alt="Photo ${k + 1}"><button type="button" data-rm="${k}" aria-label="Retirer la photo ${k + 1}">×</button></div>`).join('');
+  };
+  draw();
+  phBox.onclick = e => {
+    const rm = e.target.closest('[data-rm]');
+    if (rm) { d.photos.splice(+rm.dataset.rm, 1); draw(); return; }
+    const im = e.target.closest('img');
+    if (im) { const k = +im.dataset.k; d.photos.unshift(d.photos.splice(k, 1)[0]); draw(); }
+  };
+  const addFiles = async e => {
+    const files = [...e.target.files];
+    if (!files.length) return;
+    toast('Traitement des photos…');
+    for (const f of files) {
+      try { d.photos.push(await makePhoto(f)); draw(); }
+      catch (err) { toast('Une photo n’a pas pu être lue.'); }
+    }
+    e.target.value = '';
+  };
+  $('#' + pre + '-files', sheet).onchange = addFiles;
+  $('#' + pre + '-cam', sheet).onchange = addFiles;
+  return draw;
+}
+
+function bindCatSelect(sel, value) {
+  const draw = v => {
+    sel.innerHTML = cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('') + '<option value="__new">+ Nouvelle catégorie…</option>';
+    sel.value = cats.some(c => c.id === v) ? v : (cats[0] ? cats[0].id : '__new');
+  };
+  draw(value);
+  let last = sel.value;
+  sel.onchange = async () => {
+    if (sel.value !== '__new') { last = sel.value; return; }
+    const name = (prompt('Nom de la nouvelle catégorie') || '').trim();
+    if (!name) { sel.value = last; return; }
+    const c = { id: uid(), name, order: cats.length };
+    await put('categories', c); await loadAll();
+    draw(c.id); last = c.id;
+  };
+}
+
+// Branche le bouton « Remplir automatiquement » d'un formulaire (pre = 'f' inventaire, 'w' liste d'envie)
+function bindAutofill(pre, sel, photos) {
+  const g = id => $('#' + pre + '-' + id, sheet);
+  const urlEl = g('url'), btn = g('auto'), msg = g('automsg');
+  let busy = false;
+  const setIf = (id, v) => { const el = g(id); if (el && v && !el.value.trim()) { el.value = v; return true; } return false; };
+  const run = async () => {
+    if (busy) return;
+    const link = firstLink(urlEl.value);
+    if (!link) { toast('Collez d’abord le lien de l’article.'); urlEl.focus(); return; }
+    if (!relayUrl()) { msg.textContent = 'Le remplissage automatique n’est pas encore réglé : allez dans Réglages > Remplissage automatique.'; return; }
+    busy = true; btn.disabled = true;
+    msg.textContent = 'Lecture de la page en cours…';
+    try {
+      const p = await relayGet('?url=' + encodeURIComponent(link));
+      if (!p || !p.ok) {
+        msg.textContent = p && p.error === 'blocked' ? 'Ce site refuse la lecture automatique. Remplissez à la main : le lien est conservé.'
+          : p && p.error === 'empty' ? 'Aucune information trouvée sur cette page. Remplissez à la main.'
+          : 'La page n’a pas pu être lue. Remplissez à la main.';
+        return;
+      }
+      urlEl.value = p.finalUrl || link;
+      const got = [];
+      const nameWasEmpty = !g('name').value.trim();
+      if (setIf('name', p.name)) got.push('nom');
+      if (p.price != null && setIf('price', p.price.toFixed(2).replace('.', ','))) got.push('prix');
+      if (g('desc') && setIf('desc', p.description)) got.push('descriptif');
+      if (setIf('notes', [p.brand && 'Marque : ' + p.brand, p.sku && 'Réf. : ' + p.sku].filter(Boolean).join(' – '))) got.push('référence');
+      const st = g('store');
+      if (p.store && st && !st.value.trim()) { st.value = p.store; got.push('magasin'); }
+      if (nameWasEmpty && got.includes('nom')) {
+        const gc = guessCat(p.name);
+        if (gc) { sel.value = gc; sel.dispatchEvent(new Event('change')); got.push('catégorie'); }
+      }
+      let photoMsg = '';
+      if (photos && p.image && photos.count() === 0) {
+        try {
+          const blob = await relayGet('?img=' + encodeURIComponent(p.image) + '&ref=' + encodeURIComponent(link), true);
+          await photos.add(await makePhoto(blob));
+          got.push('photo');
+        } catch (e) { photoMsg = ' La photo n’a pas pu être récupérée.'; }
+      }
+      msg.textContent = (got.length ? 'Rempli : ' + got.join(', ') + '. Vérifiez puis enregistrez.' : 'Les champs étaient déjà remplis, rien n’a été changé.') + photoMsg;
+    } catch (e) {
+      msg.textContent = 'Le relais ne répond pas. Vérifiez la connexion et l’adresse dans Réglages > Remplissage automatique.';
+    } finally { busy = false; btn.disabled = false; }
+  };
+  btn.onclick = run;
+  urlEl.addEventListener('paste', () => setTimeout(() => { if (firstLink(urlEl.value)) run(); }, 80));
+  return run;
+}
+
 /* ---------- formulaire article ---------- */
-function openForm(item, asCopy = false) {
-  const isNew = !item || asCopy;
+function openForm(item, asCopy = false, opts = {}) {
+  const isNew = !item || asCopy || !!opts.fresh;
   const d = item
     ? { ...item, photos: [...(item.photos || [])] }
-    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, date: today(), roomIds: (state.room !== 'all' && state.room !== 'none') ? [state.room] : [], store: '', url: '', description: '', location: '', notes: '', photos: [] };
+    : { id: uid(), name: '', cat: (state.cat !== 'all' && state.cat !== 'none') ? state.cat : (cats[0] && cats[0].id) || '', qty: 1, price: null, date: today(), roomIds: (state.room !== 'all' && state.room !== 'none') ? [state.room] : [], store: '', url: opts.link || '', description: '', location: '', notes: '', photos: [] };
   d.roomIds = roomsOf(d); delete d.room;
   if (asCopy) { d.id = uid(); d.name = d.name + ' (copie)'; delete d.created; }
 
   openSheet(`
     <header class="sh-head"><button class="icon" data-close aria-label="Annuler">${ICON.back}</button><h2>${isNew ? 'Nouvel article' : 'Modifier l’article'}</h2></header>
     <div class="sh-body form">
-      <div class="photos" id="ph"></div>
-      <p class="hint">Touchez une photo pour en faire la vignette (bordure colorée).</p>
-      <div class="two pickrow">
-        <label class="btn pick">Prendre une photo<input id="f-cam" type="file" accept="image/*" capture="environment" hidden></label>
-        <label class="btn pick">Choisir dans la galerie<input id="f-files" type="file" accept="image/*" multiple hidden></label>
-      </div>
+      ${photoPickerHtml('f')}
       <label>Nom de l’article<input id="f-name" class="field" autocomplete="off" value="${esc(d.name)}"></label>
       <label>Catégorie<select id="f-cat"></select></label>
       <div class="lbl">Pièces où se trouve cet article</div>
@@ -320,6 +464,8 @@ function openForm(item, asCopy = false) {
       <label>Date d’achat<input id="f-date" class="field" type="date" value="${esc(d.date || '')}"></label>
       <label>Lieu d’achat<input id="f-store" class="field" placeholder="Ikea Nice, Leroy Merlin, Amazon…" value="${esc(d.store)}"></label>
       <label>Lien vers l’article<input id="f-url" class="field" inputmode="url" autocapitalize="off" placeholder="https://" value="${esc(d.url)}"></label>
+      <button type="button" class="btn wide" id="f-auto">Remplir automatiquement depuis ce lien</button>
+      <p class="hint" id="f-automsg" role="status" aria-live="polite"></p>
       <label>Emplacement précis (facultatif)<input id="f-loc" class="field" placeholder="Placard de gauche, tiroir du haut…" value="${esc(d.location)}"></label>
       <label>Descriptif du commerçant<textarea id="f-desc" rows="5">${esc(d.description)}</textarea></label>
       <label>Notes personnelles (référence, dimensions, couleur)<textarea id="f-notes" rows="3">${esc(d.notes)}</textarea></label>
@@ -344,29 +490,9 @@ function openForm(item, asCopy = false) {
 
   const getRooms = bindRoomChecks($('#f-rooms', sheet), d.roomIds);
 
-  const phBox = $('#ph', sheet);
-  const drawPhotos = () => {
-    phBox.innerHTML = d.photos.map((p, k) => `<div class="pt"><img src="${urlOf(p.thumb)}" data-k="${k}" alt="Photo ${k + 1}"><button type="button" data-rm="${k}" aria-label="Retirer la photo ${k + 1}">×</button></div>`).join('');
-  };
-  drawPhotos();
-  phBox.onclick = e => {
-    const rm = e.target.closest('[data-rm]');
-    if (rm) { d.photos.splice(+rm.dataset.rm, 1); drawPhotos(); return; }
-    const im = e.target.closest('img');
-    if (im) { const k = +im.dataset.k; d.photos.unshift(d.photos.splice(k, 1)[0]); drawPhotos(); }
-  };
-  const addFiles = async e => {
-    const files = [...e.target.files];
-    if (!files.length) return;
-    toast('Traitement des photos…');
-    for (const f of files) {
-      try { d.photos.push(await makePhoto(f)); drawPhotos(); }
-      catch (err) { toast('Une photo n’a pas pu être lue.'); }
-    }
-    e.target.value = '';
-  };
-  $('#f-files', sheet).onchange = addFiles;
-  $('#f-cam', sheet).onchange = addFiles;
+  const drawPhotos = bindPhotoPicker('f', d);
+  const runAuto = bindAutofill('f', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawPhotos(); } });
+  if (opts.auto && d.url) runAuto();
 
   $('#f-save', sheet).onclick = async () => {
     const name = $('#f-name', sheet).value.trim();
@@ -388,10 +514,11 @@ function openForm(item, asCopy = false) {
     if (isNew) d.created = Date.now();
     try { await put('items', d); }
     catch (err) { toast('Enregistrement impossible : espace de stockage plein ?'); return; }
+    if (opts.fromWish) await del('wishes', opts.fromWish);
     await loadAll();
     refreshCurrent();
     openDetail(d.id);
-    toast('Article enregistré.');
+    toast(opts.fromWish ? 'Ajouté à l’inventaire.' : 'Article enregistré.');
   };
 }
 
@@ -503,6 +630,149 @@ function openCats() {
       for (const i of items.filter(i => i.cat === c.id)) await put('items', { ...i, cat: '', updated: Date.now() });
       await del('categories', c.id); await loadAll(); draw();
     }
+  };
+}
+
+/* ---------- liste d'envie ---------- */
+const catRank = id => { const k = cats.findIndex(c => c.id === id); return k < 0 ? 999 : k; };
+const wishSorted = () => [...wishes].sort((a, b) => catRank(a.cat) - catRank(b.cat) || a.name.localeCompare(b.name, 'fr'));
+const wishTotal = list => list.reduce((s, x) => s + (x.price || 0) * (x.qty || 1), 0);
+
+const wishRow = w => `<li class="srow${w.done ? ' done' : ''}" data-id="${w.id}">
+  <button class="tick" data-tick aria-pressed="${!!w.done}" aria-label="${w.done ? 'Remettre à acheter' : 'Marquer comme acheté'} : ${esc(w.name)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7"/></svg></button>
+  ${(w.photos || [])[0] ? `<img class="thumb" src="${urlOf(w.photos[0].thumb)}" alt="" loading="lazy">` : ''}
+  <button class="body sbody" data-open><strong>${esc(w.name)}</strong><span class="meta">${esc([w.store, roomNames(w), w.notes].filter(Boolean).join(', '))}</span></button>
+  <span class="right"><span class="qty">× ${w.qty || 1}</span><span class="price">${w.price != null ? eur(w.price * (w.qty || 1)) : ''}</span></span>
+  ${w.done ? '<button class="btn small" data-inv>À l’inventaire</button>' : ''}</li>`;
+
+function renderWishlist() {
+  view.innerHTML = `
+    <div class="searchbar"><input id="wq" type="search" enterkeyhint="search" autocomplete="off" aria-label="Rechercher dans la liste d’envie" placeholder="Rechercher dans la liste d’envie…" value="${esc(state.wq)}"></div>
+    <p class="summary" id="wsum"></p>
+    <div class="shopbar"><button class="btn" id="wcopy">Copier la liste</button>${navigator.share ? '<button class="btn" id="wshare">Partager</button>' : ''}</div>
+    <ul class="list" id="wlist"></ul>
+    <button class="fab" id="wadd">${ICON.plus}<span>Ajouter</span></button>`;
+  $('#wq').addEventListener('input', e => { state.wq = e.target.value; refreshWish(); });
+  $('#wadd').onclick = () => openWishForm();
+  $('#wcopy').onclick = async () => {
+    if (!wishes.some(w => !w.done)) return toast('Rien à acheter pour l’instant.');
+    try { await navigator.clipboard.writeText(wishText()); toast('Liste copiée.'); } catch (e) { toast('Copie impossible sur cet appareil.'); }
+  };
+  const sh = $('#wshare');
+  if (sh) sh.onclick = () => { if (!wishes.some(w => !w.done)) return toast('Rien à acheter pour l’instant.'); navigator.share({ title: 'Liste d’envie', text: wishText() }).catch(() => {}); };
+  $('#wlist').onclick = async e => {
+    const li = e.target.closest('[data-id]');
+    if (!li) return;
+    const w = wishes.find(x => x.id === li.dataset.id);
+    if (!w) return;
+    if (e.target.closest('[data-tick]')) {
+      w.done = !w.done;
+      await put('wishes', w); await loadAll(); refreshWish();
+    } else if (e.target.closest('[data-inv]')) wishToInventory(w);
+    else openWishForm(w);
+  };
+  refreshWish();
+}
+
+function refreshWish() {
+  const t = norm(state.wq).split(/\s+/).filter(Boolean);
+  const all = wishSorted().filter(w => { const h = norm([w.name, w.description, w.notes, w.store, w.url, catName(w.cat), roomNames(w)].join(' ')); return t.every(x => h.includes(x)); });
+  const todo = all.filter(w => !w.done), bought = all.filter(w => w.done);
+  $('#wsum').textContent = wishes.length ? `${todo.length} à acheter, estimation ${eur(wishTotal(todo))}${bought.length ? `, ${bought.length} déjà acheté${bought.length > 1 ? 's' : ''}` : ''}` : '';
+  if (!wishes.length) { $('#wlist').innerHTML = '<li class="empty">Votre liste d’envie est vide.<br>Touchez « Ajouter » pour noter un article que vous aimeriez acheter.</li>'; return; }
+  if (!all.length) { $('#wlist').innerHTML = `<li class="empty">Aucun résultat pour « ${esc(state.wq)} ».</li>`; return; }
+  let h = '', last = null;
+  for (const w of todo) {
+    const cn = catName(w.cat);
+    if (cn !== last) { h += `<li class="grp">${esc(cn)}</li>`; last = cn; }
+    h += wishRow(w);
+  }
+  if (bought.length) h += '<li class="grp">Déjà achetés</li>' + bought.map(wishRow).join('');
+  $('#wlist').innerHTML = h;
+}
+
+function wishText() {
+  const todo = wishSorted().filter(w => !w.done);
+  const lines = [`Liste d’envie du ${fmtDate(Date.now())}`];
+  let last = null;
+  for (const w of todo) {
+    const cn = catName(w.cat);
+    if (cn !== last) { lines.push('', cn.toUpperCase()); last = cn; }
+    lines.push(`- ${w.name} × ${w.qty || 1}${w.price != null ? ' (environ ' + eur(w.price * (w.qty || 1)) + ')' : ''}${roomNames(w) ? ', ' + roomNames(w) : ''}${w.store ? ', ' + w.store : ''}${w.url ? ', ' + w.url : ''}`);
+  }
+  lines.push('', `Total estimé : ${eur(wishTotal(todo))}`);
+  return lines.join('\n');
+}
+
+function wishToInventory(w) {
+  openForm({ id: uid(), name: w.name, cat: w.cat, qty: w.qty || 1, price: w.price, date: today(), roomIds: roomsOf(w), store: w.store, url: w.url, description: w.description || '', location: '', notes: w.notes || '', photos: [...(w.photos || [])] }, false, { fromWish: w.id, fresh: true });
+}
+
+function openWishForm(w, opts = {}) {
+  const isNew = !w;
+  const d = w
+    ? { ...w, photos: [...(w.photos || [])], roomIds: roomsOf(w) }
+    : { id: uid(), name: '', cat: cats[0] ? cats[0].id : '', qty: 1, price: null, store: '', url: opts.link || '', description: '', notes: '', roomIds: [], done: false, photos: [] };
+  delete d.room;
+  openSheet(`
+    <header class="sh-head"><button class="icon" data-close aria-label="Annuler">${ICON.back}</button><h2>${isNew ? 'Nouvelle envie' : 'Modifier l’envie'}</h2></header>
+    <div class="sh-body form">
+      ${photoPickerHtml('w')}
+      <label>Nom de l’article<input id="w-name" class="field" autocomplete="off" value="${esc(d.name)}"></label>
+      <label>Catégorie<select id="w-cat"></select></label>
+      <div class="lbl">Pièces où il irait</div>
+      <details class="multi" id="w-rooms"><summary></summary><div class="multi-panel"></div></details>
+      <div class="two">
+        <label>Quantité<input id="w-qty" class="field" type="number" min="1" inputmode="numeric" value="${d.qty || 1}"></label>
+        <label>Prix estimé par unité (€)<input id="w-price" class="field" inputmode="decimal" value="${d.price != null ? String(d.price).replace('.', ',') : ''}"></label>
+      </div>
+      <label>Où l’acheter<input id="w-store" class="field" placeholder="Ikea Nice, Maisons du Monde, Amazon…" value="${esc(d.store)}"></label>
+      <label>Lien vers l’article<input id="w-url" class="field" inputmode="url" autocapitalize="off" placeholder="https://" value="${esc(d.url)}"></label>
+      <button type="button" class="btn wide" id="w-auto">Remplir automatiquement depuis ce lien</button>
+      <p class="hint" id="w-automsg" role="status" aria-live="polite"></p>
+      <label>Descriptif du commerçant<textarea id="w-desc" rows="4">${esc(d.description || '')}</textarea></label>
+      <label>Notes (référence, dimensions, couleur, pourquoi)<textarea id="w-notes" rows="3">${esc(d.notes)}</textarea></label>
+      ${d.url ? `<a class="btn wide" href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">Ouvrir la fiche en ligne</a>` : ''}
+      ${isNew ? '' : '<button class="btn wide" id="w-inv">Acheté : l’ajouter à l’inventaire</button><button class="btn wide danger" id="w-del">Supprimer de la liste</button>'}
+    </div>
+    <footer class="sh-foot"><button class="btn" data-close>Annuler</button><button class="btn primary" id="w-save">Enregistrer</button></footer>`);
+  const sel = $('#w-cat', sheet);
+  bindCatSelect(sel, d.cat);
+  const getRooms = bindRoomChecks($('#w-rooms', sheet), d.roomIds);
+  const drawWishPhotos = bindPhotoPicker('w', d);
+  const runAutoW = bindAutofill('w', sel, { count: () => d.photos.length, add: async p => { d.photos.push(p); drawWishPhotos(); } });
+  if (opts.auto && d.url) runAutoW();
+  const collect = () => {
+    const name = $('#w-name', sheet).value.trim();
+    if (!name) { toast('Indiquez le nom de l’article.'); $('#w-name', sheet).focus(); return false; }
+    const pr = parseFloat(String($('#w-price', sheet).value).replace(/\s/g, '').replace(',', '.'));
+    d.name = name;
+    d.cat = sel.value === '__new' ? '' : sel.value;
+    d.roomIds = getRooms();
+    d.qty = Math.max(1, parseInt($('#w-qty', sheet).value, 10) || 1);
+    d.price = isNaN(pr) ? null : pr;
+    d.store = $('#w-store', sheet).value.trim();
+    d.url = fixUrl($('#w-url', sheet).value);
+    d.description = $('#w-desc', sheet).value.trim();
+    d.notes = $('#w-notes', sheet).value.trim();
+    d.updated = Date.now();
+    if (isNew && !d.created) d.created = Date.now();
+    return true;
+  };
+  $('#w-save', sheet).onclick = async () => {
+    if (!collect()) return;
+    try { await put('wishes', d); }
+    catch (err) { toast('Enregistrement impossible : espace de stockage plein ?'); return; }
+    await loadAll();
+    closeSheet();
+    setTimeout(() => toast('Ajouté à la liste d’envie.'), 200);
+  };
+  const inv = $('#w-inv', sheet);
+  if (inv) inv.onclick = () => { if (collect()) wishToInventory(d); };
+  const rm = $('#w-del', sheet);
+  if (rm) rm.onclick = async () => {
+    if (!confirm(`Supprimer « ${d.name} » de la liste ?`)) return;
+    await del('wishes', d.id); await loadAll(); closeSheet();
   };
 }
 
@@ -695,8 +965,9 @@ function download(blob, name) {
 
 async function exportJSON() {
   toast('Préparation de la sauvegarde…');
-  const out = { app: 'inventaire-logement', version: 2, exported: new Date().toISOString(), categories: cats, rooms, controls, items: [] };
+  const out = { app: 'inventaire-logement', version: 3, exported: new Date().toISOString(), categories: cats, rooms, controls, items: [], wishes: [] };
   for (const i of items) out.items.push({ ...i, photos: await Promise.all((i.photos || []).map(p => blobToData(p.full))) });
+  for (const w of wishes) out.wishes.push({ ...w, photos: await Promise.all((w.photos || []).map(p => blobToData(p.full))) });
   download(new Blob([JSON.stringify(out)], { type: 'application/json' }), `inventaire-${today()}.json`);
   localStorage.setItem('lastBackup', String(Date.now()));
   renderSettings();
@@ -713,7 +984,7 @@ async function importJSON(file, replace) {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'inventaire-logement') throw new Error('format');
-    if (replace) for (const n of ['items', 'categories', 'controls', 'rooms']) await clearStore(n);
+    if (replace) for (const n of ['items', 'categories', 'controls', 'rooms', 'wishes']) await clearStore(n);
     for (const c of data.categories || []) await put('categories', c);
     for (const r of data.rooms || []) await put('rooms', r);
     for (const c of data.controls || []) await put('controls', c);
@@ -726,6 +997,15 @@ async function importJSON(file, replace) {
       }
       await put('items', { ...i, photos });
     }
+    for (const w of data.wishes || []) {
+      const photos = [];
+      for (const dUrl of w.photos || []) {
+        if (typeof dUrl !== 'string') continue;
+        const blob = await (await fetch(dUrl)).blob();
+        photos.push({ full: blob, thumb: await shrink(blob, 360, .75) });
+      }
+      await put('wishes', { ...w, photos });
+    }
     await loadAll();
     if (!data.rooms) await migrateRooms(true);
     toast(`${(data.items || []).length} article(s) importé(s).`);
@@ -736,7 +1016,7 @@ async function importJSON(file, replace) {
 }
 
 async function renderSettings() {
-  const nPhotos = items.reduce((s, i) => s + (i.photos || []).length, 0);
+  const nPhotos = [...items, ...wishes].reduce((n, i) => n + (i.photos || []).length, 0);
   let usage = '';
   try {
     const est = await navigator.storage.estimate();
@@ -754,11 +1034,25 @@ async function renderSettings() {
     <label class="btn wide">Restaurer en ajoutant à l’existant<input id="imp1" type="file" accept="application/json,.json" hidden></label>
     <label class="btn wide danger">Restaurer en remplaçant tout<input id="imp2" type="file" accept="application/json,.json" hidden></label>
     <button class="btn wide" id="csv">Exporter en tableur (CSV, sans photos)</button>
+    <h3>Remplissage automatique</h3>
+    <p class="muted">Adresse du relais Cloudflare qui lit les pages des magasins (voir le guide).</p>
+    <input id="relay" class="field" inputmode="url" autocapitalize="off" placeholder="https://mes-outils-relais.xxx.workers.dev" value="${esc(relayUrl())}">
+    <button class="btn wide" id="relay-save">Enregistrer et tester</button>
+    <p class="muted" id="relay-msg" role="status" aria-live="polite"></p>
     <h3>Application</h3>
     ${isStandalone() ? '<p class="muted">Application déjà installée sur cet appareil.</p>' : '<button class="btn wide" id="inst">Installer sur l’écran d’accueil</button>'}
     ${persisted ? '<p class="muted">Stockage protégé contre le nettoyage automatique.</p>' : '<button class="btn wide" id="pers">Protéger les données contre le nettoyage automatique</button>'}
   </section>`;
   $('#exp').onclick = exportJSON;
+  $('#relay-save').onclick = async () => {
+    const v = fixUrl($('#relay').value).replace(/\/+$/, '');
+    const out = $('#relay-msg');
+    if (!v) { localStorage.removeItem('relayLogement'); localStorage.removeItem('relayOutils'); out.textContent = 'Adresse effacée.'; return; }
+    localStorage.setItem('relayLogement', v);
+    out.textContent = 'Test en cours…';
+    try { const r = await relayGet('?ping=1'); out.textContent = r && r.pong ? 'Le relais répond : tout est prêt.' : 'Cette adresse ne ressemble pas au relais.'; }
+    catch (e) { out.textContent = 'Le relais ne répond pas. Vérifiez l’adresse.'; }
+  };
   $('#csv').onclick = exportCSV;
   $('#imp1').onchange = e => { const f = e.target.files[0]; if (f) importJSON(f, false); e.target.value = ''; };
   $('#imp2').onchange = e => { const f = e.target.files[0]; if (f && confirm('Remplacer tout l’inventaire actuel par cette sauvegarde ?')) importJSON(f, true); e.target.value = ''; };
@@ -776,6 +1070,24 @@ async function renderSettings() {
   if (pers) pers.onclick = async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Stockage protégé.' : 'Le navigateur a refusé : installez d’abord l’application.'); renderSettings(); };
 }
 
+/* ---------- lien reçu par le menu « Partager » du téléphone ---------- */
+function handleShare() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('url') && !q.has('text') && !q.has('title')) return;
+  const link = firstLink(q.get('url'), q.get('text'), q.get('title'));
+  history.replaceState(null, '', location.pathname);
+  if (!link) { toast('Aucun lien trouvé dans ce partage.'); return; }
+  openSheet(`
+    <header class="sh-head"><button class="icon" data-close aria-label="Annuler">${ICON.back}</button><h2>Ajouter cet article</h2></header>
+    <div class="sh-body form">
+      <p class="muted" style="overflow-wrap:anywhere">${esc(link)}</p>
+      <button class="btn primary wide" id="sh-inv">Je l’ai déjà : l’ajouter à l’inventaire</button>
+      <button class="btn wide" id="sh-wish">Je le veux : liste d’envie</button>
+    </div>`);
+  $('#sh-inv', sheet).onclick = () => openForm(null, false, { link, auto: true });
+  $('#sh-wish', sheet).onclick = () => { setTab('wish'); openWishForm(null, { link, auto: true }); };
+}
+
 /* ---------- démarrage ---------- */
 (async function init() {
   try {
@@ -790,6 +1102,7 @@ async function renderSettings() {
   }
   history.replaceState(null, '');
   setTab('inv');
+  handleShare();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 })();
